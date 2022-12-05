@@ -281,7 +281,7 @@ def update_resource(resource, api_key, ckan_url):
     Update webstore_url and webstore_last_updated in CKAN
     """
 
-    resource['url_type'] = 'datapusher'
+    #resource['url_type'] = 'datapusher'
 
     url = get_url('resource_update', ckan_url)
     r = requests.post(
