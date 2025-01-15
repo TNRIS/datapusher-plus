@@ -1684,7 +1684,7 @@ def _push_to_datastore(task_id, input, dry_run=False, temp_dir=None):
 
     resource["datastore_active"] = True
     resource["total_record_count"] = record_count
-    if preview_rows < record_count or (preview_rows > 0):
+    if preview_rows < record_count and (preview_rows > 0):
         resource["preview"] = True
         resource["preview_rows"] = copied_count
     else:
