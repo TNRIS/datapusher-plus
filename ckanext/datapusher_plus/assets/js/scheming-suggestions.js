@@ -8,6 +8,128 @@ if (typeof window._schemingSuggestionsGlobalState === 'undefined') {
     };
 }
 
+// Standalone initialization for pages without suggestion buttons
+// This ensures polling starts even if no suggestion buttons are present on the current page
+(function($) {
+    $(document).ready(function() {
+        if (!$('form.dataset-form, form#dataset-edit').length) {
+            return;
+        }
+        
+        // Ensure ckan object is available
+        if (typeof ckan === 'undefined') {
+            console.warn("SchemingSuggestions Standalone: ckan object not available, skipping initialization.");
+            return;
+        }
+        
+        var globalState = window._schemingSuggestionsGlobalState;
+        
+        var foundDatasetId = null;
+        var $form = $('form.dataset-form, form#dataset-edit').first();
+        
+        if ($form.length && $form.data('dataset-id')) {
+            foundDatasetId = $form.data('dataset-id');
+        } else if ($form.length && $form.find('input[name="id"]').val()) {
+            foundDatasetId = $form.find('input[name="id"]').val();
+        } else if ($form.length && $form.find('input[name="pkg_name"]').val()) {
+            foundDatasetId = $form.find('input[name="pkg_name"]').val();
+        } else if ($('body').data('dataset-id')) {
+            foundDatasetId = $('body').data('dataset-id');
+        } else {
+            var pathArray = window.location.pathname.split('/');
+            var datasetIndex = pathArray.indexOf('dataset');
+            var editIndex = pathArray.indexOf('edit');
+            if (datasetIndex !== -1 && editIndex !== -1 && editIndex === datasetIndex + 1 && pathArray.length > editIndex + 1) {
+                var potentialId = pathArray[editIndex + 1];
+                if (potentialId && potentialId.length > 5) {
+                    foundDatasetId = potentialId;
+                }
+            }
+        }
+        
+        if (!foundDatasetId) {
+            return; // No dataset ID found, nothing to do
+        }
+        
+        // Store dataset ID globally if not already set
+        if (!globalState.datasetId) {
+            globalState.datasetId = foundDatasetId;
+        }
+        
+        // This ensures banner appears on EVERY page load during processing
+        $.ajax({
+            url: (ckan.SITE_ROOT || '') + '/api/3/action/package_show',
+            data: { id: globalState.datasetId || foundDatasetId, include_tracking: false },
+            dataType: 'json',
+            cache: false,
+            success: function(response) {
+                var isProcessing = false;
+                var terminalStatuses = ['DONE', 'ERROR', 'FAILED'];
+                
+                if (response.success && response.result && response.result.dpp_suggestions) {
+                    var status = response.result.dpp_suggestions.STATUS;
+                    // Check if currently processing (not in terminal state)
+                    isProcessing = !status || !terminalStatuses.includes(status.toUpperCase());
+                } else {
+                    // No dpp_suggestions yet, could be initial processing
+                    isProcessing = true;
+                }
+                
+                if (isProcessing) {
+                    var processingMessage = '<span><i class="fa fa-spinner fa-spin"></i> Processing dataset, suggestions will appear shortly...</span>';
+                    if ($('#scheming-processing-banner').length === 0) {
+                        var bannerHtml = '<div id="scheming-processing-banner" class="scheming-alert scheming-alert-info">' +
+                                         processingMessage +
+                                         '</div>';
+                        var $formContainer = $('.primary.span9').first();
+                        if ($formContainer.length === 0) $formContainer = $('form.dataset-form, form#dataset-edit').first();
+                        if ($formContainer.length === 0) $formContainer = $('main .container, #content .container').first();
+                        if ($formContainer.length) $formContainer.prepend(bannerHtml);
+                        else $('body').prepend(bannerHtml);
+                    }
+                    
+                    // Start polling only if not already polling
+                    if (!globalState.isPolling) {
+                        globalState.globalInitDone = true;
+                        globalState.isPolling = true;
+                        
+                        var hasModuleInstance = false;
+                        if (typeof ckan !== 'undefined' && ckan.sandbox && ckan.sandbox()._instances) {
+                            var instances = ckan.sandbox()._instances;
+                            for (var i = 0; i < instances.length; i++) {
+                                if (instances[i].options && instances[i]._pollForSuggestions) {
+                                    instances[i]._pollForSuggestions();
+                                    hasModuleInstance = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (!hasModuleInstance) {
+                            // Start standalone polling
+                            window._schemingSuggestionsStandalonePoll();
+                        }
+                    }
+                }
+            },
+            error: function() {
+                console.warn("SchemingSuggestions Standalone: Could not check initial status, showing banner as fallback.");
+                var processingMessage = '<span><i class="fa fa-spinner fa-spin"></i> Processing dataset, suggestions will appear shortly...</span>';
+                if ($('#scheming-processing-banner').length === 0) {
+                    var bannerHtml = '<div id="scheming-processing-banner" class="scheming-alert scheming-alert-info">' +
+                                     processingMessage +
+                                     '</div>';
+                    var $formContainer = $('.primary.span9').first();
+                    if ($formContainer.length === 0) $formContainer = $('form.dataset-form, form#dataset-edit').first();
+                    if ($formContainer.length === 0) $formContainer = $('main .container, #content .container').first();
+                    if ($formContainer.length) $formContainer.prepend(bannerHtml);
+                    else $('body').prepend(bannerHtml);
+                }
+            }
+        });
+    });
+})(jQuery);
+
 ckan.module('scheming-suggestions', function($) {
     var esc = function(str) { return typeof str === 'string' ? $('<div>').text(str).html() : str; };
     var globalState = window._schemingSuggestionsGlobalState;
@@ -70,7 +192,9 @@ ckan.module('scheming-suggestions', function($) {
 
             if (!globalState.globalInitDone) {
                 globalState.globalInitDone = true;
-                if (!globalState.isPolling) this._pollForSuggestions(); // Start polling if not already
+                if (!globalState.isPolling) {
+                    this._pollForSuggestions(); // Start polling if not already
+                }
             }
             this._attachBaseEventHandlers(el, this._popoverDivs[fieldName], fieldName);
         },
@@ -683,3 +807,134 @@ ckan.module('scheming-suggestions', function($) {
         }
     };
 });
+
+// Standalone polling function that can work without module instances
+window._schemingSuggestionsStandalonePoll = function() {
+    // Ensure ckan object is available
+    if (typeof ckan === 'undefined') {
+        console.error("SchemingSuggestions Standalone Poll: ckan object not available.");
+        return;
+    }
+    
+    var globalState = window._schemingSuggestionsGlobalState;
+    var options = {
+        pollingInterval: 2500,
+        maxPollAttempts: 40,
+        terminalStatuses: ['DONE', 'ERROR', 'FAILED'],
+        statusProcessingTextPrefix: '<span><i class="fa fa-spinner fa-spin"></i> Status: ',
+        statusDoneText: '<span><i class="fa fa-check-circle"></i> Suggestions processed. Fields updated.</span>',
+        statusErrorText: '<span><i class="fa fa-exclamation-triangle"></i> Error processing suggestions. Status: ',
+        timeoutMessage: '<span><i class="fa fa-exclamation-triangle"></i> Suggestions are taking longer than usual to process.</span>',
+        errorMessage: '<span><i class="fa fa-times-circle"></i> Could not retrieve suggestions at this time.</span>'
+    };
+    
+    function updateProcessingBanner(message, alertClass) {
+        var $banner = $('#scheming-processing-banner');
+        if ($banner.length) {
+            var timestamp = new Date().toLocaleTimeString();
+            $banner.html(message + ' <span style="font-size:0.7em; opacity:0.7;">(as of ' + timestamp + ')</span>')
+                   .removeClass('scheming-alert-info scheming-alert-warning scheming-alert-danger scheming-alert-success')
+                   .addClass(alertClass || 'scheming-alert-info');
+        }
+    }
+    
+    function removeProcessingBanner() {
+        $('#scheming-processing-banner').fadeOut(function() { $(this).remove(); });
+    }
+    
+    function doPoll() {
+        if (!globalState.datasetId) {
+            updateProcessingBanner(options.errorMessage + " (Dataset ID missing)", 'scheming-alert-danger');
+            globalState.isPolling = false;
+            return;
+        }
+        
+        if (globalState.pollAttempts >= options.maxPollAttempts) {
+            if (!$('#scheming-processing-banner').hasClass('scheming-alert-success') && 
+                !$('#scheming-processing-banner').hasClass('scheming-alert-danger')) {
+                updateProcessingBanner(options.timeoutMessage, 'scheming-alert-warning');
+            }
+            globalState.isPolling = false;
+            return;
+        }
+        
+        $.ajax({
+            url: (ckan.SITE_ROOT || '') + '/api/3/action/package_show',
+            data: { id: globalState.datasetId, include_tracking: false },
+            dataType: 'json',
+            cache: false,
+            success: function(response) {
+                globalState.pollAttempts++;
+                
+                if (response.success && response.result) {
+                    var datasetObject = response.result;
+                    var dppSuggestionsData = datasetObject.dpp_suggestions;
+                    var currentDppStatus = (dppSuggestionsData && dppSuggestionsData.STATUS) ? 
+                                           dppSuggestionsData.STATUS.toUpperCase() : null;
+                    
+                    if (currentDppStatus) {
+                        if (options.terminalStatuses.includes(currentDppStatus)) {
+                            if (currentDppStatus === 'DONE') {
+                                console.log("SchemingSuggestions Standalone: STATUS is DONE.");
+                                updateProcessingBanner(options.statusDoneText, 'scheming-alert-success');
+                                setTimeout(function() {
+                                    removeProcessingBanner();
+                                }, 5000);
+                            } else {
+                                console.error("SchemingSuggestions Standalone: STATUS is " + currentDppStatus);
+                                updateProcessingBanner(
+                                    options.statusErrorText + currentDppStatus + '</span>',
+                                    'scheming-alert-danger'
+                                );
+                            }
+                            globalState.isPolling = false;
+                        } else {
+                            console.log("SchemingSuggestions Standalone: Poll " + globalState.pollAttempts + 
+                                      ": STATUS is " + currentDppStatus);
+                            updateProcessingBanner(
+                                options.statusProcessingTextPrefix + currentDppStatus + '</span>',
+                                'scheming-alert-info'
+                            );
+                            setTimeout(doPoll, options.pollingInterval);
+                        }
+                    } else {
+                        console.warn("SchemingSuggestions Standalone: Poll " + globalState.pollAttempts + 
+                                   ": dpp_suggestions object has no STATUS field.");
+                        if (globalState.pollAttempts < options.maxPollAttempts) {
+                            setTimeout(doPoll, options.pollingInterval);
+                        } else {
+                            updateProcessingBanner(options.timeoutMessage, 'scheming-alert-warning');
+                            globalState.isPolling = false;
+                        }
+                    }
+                } else {
+                    console.error("SchemingSuggestions Standalone: Poll " + globalState.pollAttempts + 
+                                ": API error/unexpected structure.", response);
+                    if (globalState.pollAttempts < options.maxPollAttempts) {
+                        setTimeout(doPoll, options.pollingInterval * 1.5);
+                    } else {
+                        updateProcessingBanner(options.errorMessage + " (API response error)", 'scheming-alert-danger');
+                        globalState.isPolling = false;
+                    }
+                }
+            },
+            error: function(jqXHR, textStatus, errorThrown) {
+                console.error("SchemingSuggestions Standalone: Poll " + (globalState.pollAttempts + 1) + 
+                            ": AJAX Error:", textStatus, errorThrown, jqXHR.status);
+                globalState.pollAttempts++;
+                if (globalState.pollAttempts < options.maxPollAttempts) {
+                    var nextPollDelay = options.pollingInterval * Math.pow(1.2, Math.min(globalState.pollAttempts, 7));
+                    setTimeout(doPoll, nextPollDelay);
+                } else {
+                    if (!$('#scheming-processing-banner').hasClass('scheming-alert-success')) {
+                        updateProcessingBanner(options.errorMessage + " (API connection error)", 'scheming-alert-danger');
+                    }
+                    globalState.isPolling = false;
+                }
+            }
+        });
+    }
+    
+    // Start the polling
+    doPoll();
+};
