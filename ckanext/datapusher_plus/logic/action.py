@@ -21,6 +21,7 @@ import ckanext.datapusher_plus.logic.schema as dpschema
 import ckanext.datapusher_plus.interfaces as interfaces
 import ckanext.datapusher_plus.jobs as jobs
 import ckanext.datapusher_plus.utils as utils
+import ckanext.datapusher_plus.config as dpconfig
 
 from ckanext.datapusher_plus.model import get_job_details
 
@@ -255,17 +256,51 @@ def datapusher_hook(context: Context, data_dict: dict[str, Any]):
                 cast("dict[str, Any]", context), resource_dict, dataset_dict
             )
 
-        try:
-            logic.get_action("resource_create_default_resource_views")(
-                context,
-                {
-                    "resource": resource_dict,
-                    "package": dataset_dict,
-                    "create_datastore_views": True,
-                },
-            )
-        except Exception as e:
-            log.error("Error creating default views for resource %s: %s", res_id, e)
+        # Check if we should create default views based on resource age
+        # This prevents recreating views that were intentionally deleted
+        should_create_views = True
+        skip_threshold = dpconfig.SKIP_VIEW_RECREATION_THRESHOLD
+        
+        if skip_threshold > 0:
+            # Check if resource has a created timestamp
+            resource_created = resource_dict.get("created")
+            if resource_created:
+                try:
+                    created_datetime = parse_date(resource_created)
+                    current_datetime = datetime.datetime.utcnow()
+                    # Make created_datetime timezone-naive if it has timezone info
+                    if created_datetime.tzinfo is not None:
+                        created_datetime = created_datetime.replace(tzinfo=None)
+                    
+                    age_seconds = (current_datetime - created_datetime).total_seconds()
+                    
+                    if age_seconds > skip_threshold:
+                        should_create_views = False
+                        log.info(
+                            "Skipping view creation for resource %s: "
+                            "Resource is %.1f seconds old (threshold: %d seconds). "
+                            "Views were likely intentionally removed.",
+                            res_id, age_seconds, skip_threshold
+                        )
+                except (ValueError, AttributeError) as e:
+                    log.warning(
+                        "Could not parse resource created timestamp for %s: %s. "
+                        "Will create views anyway.",
+                        res_id, e
+                    )
+
+        if should_create_views:
+            try:
+                logic.get_action("resource_create_default_resource_views")(
+                    context,
+                    {
+                        "resource": resource_dict,
+                        "package": dataset_dict,
+                        "create_datastore_views": True,
+                    },
+                )
+            except Exception as e:
+                log.error("Error creating default views for resource %s: %s", res_id, e)
 
         # Check if the uploaded file has been modified in the meantime
         if resource_dict.get("last_modified") and metadata.get("task_created"):
