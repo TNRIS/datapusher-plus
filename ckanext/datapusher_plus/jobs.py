@@ -39,6 +39,8 @@ from ckanext.datapusher_plus.logging_utils import TRACE
 from ckanext.datapusher_plus.qsv_utils import QSVCommand
 from ckanext.datapusher_plus.pii_screening import screen_for_pii
 
+import ckan.plugins.toolkit as tk
+
 if locale.getdefaultlocale()[0]:
     lang, encoding = locale.getdefaultlocale()
     locale.setlocale(locale.LC_ALL, locale=(lang, encoding))
@@ -1073,7 +1075,10 @@ def _push_to_datastore(
 
     copied_count = 0
     try:
-        raw_connection = psycopg2.connect(conf.DATASTORE_WRITE_URL)
+        #raw_connection = psycopg2.connect(conf.DATASTORE_WRITE_URL)
+        # FIXME: this is temporary due to issue with environment variables not setting correctly in config.py
+        # https://github.com/TNRIS/texaswaterhub_CKAN/issues/1046
+        raw_connection = psycopg2.connect(tk.config.get("ckan.datastore.write_url"))
     except psycopg2.Error as e:
         raise utils.JobError(f"Could not connect to the Datastore: {e}")
     else:
