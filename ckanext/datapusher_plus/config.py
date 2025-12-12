@@ -183,3 +183,13 @@ AUTO_UNZIP_ONE_FILE = tk.asbool(
 AUTO_CREATE_ZIP_MANIFEST = tk.asbool(
     tk.config.get("ckanext.datapusher_plus.auto_create_zip_manifest", True)
 )
+
+# Time threshold (in seconds) for skipping view recreation on resubmission
+# If a resource is older than this threshold when datapusher completes,
+# views will NOT be automatically created (assumes they were intentionally deleted)
+# Default is 300 seconds (5 minutes) - resources created more than 5 minutes ago
+# will not have views auto-created on datastore resubmission
+# Set to 0 to always create views (old behavior)
+SKIP_VIEW_RECREATION_THRESHOLD = tk.asint(
+    tk.config.get("ckanext.datapusher_plus.skip_view_recreation_threshold", "300")
+)
