@@ -18,8 +18,7 @@ import ckanext.datapusher_plus.helpers as dph
 import ckanext.datapusher_plus.logic.action as action
 import ckanext.datapusher_plus.logic.auth as auth
 import ckanext.datapusher_plus.cli as cli
-import ckanext.datapusher_plus.jinja2_helpers as dphj
-
+import ckanext.datapusher_plus.config as conf
 
 tk = p.toolkit
 
@@ -62,6 +61,9 @@ class DatapusherPlusPlugin(p.SingletonPlugin):
 
     def configure(self, config):
         """Called when the plugin is loaded."""
+        # Ensure runtime-config values are refreshed (eg when using ckanext-envars)
+        conf.reload(config)
+
         # Check configuration for optional features and store for reference
         self.enable_form_redirect = tk.asbool(
             config.get('ckanext.datapusher_plus.enable_form_redirect', False)
@@ -225,7 +227,7 @@ class DatapusherPlusPlugin(p.SingletonPlugin):
             "is_preformulated_field": dph.is_preformulated_field,
             "get_primary_key_candidates": dph.get_primary_key_candidates,
             "get_datastore_fields_with_cardinality": dph.get_datastore_fields_with_cardinality,
-            "spatial_extent_feature_collection": dphj.spatial_extent_feature_collection,
+            #"spatial_extent_feature_collection": dph.spatial_extent_feature_collection,
 
         }
 

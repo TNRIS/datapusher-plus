@@ -154,6 +154,9 @@ def _push_to_datastore(
     dry_run: bool = False,
     temp_dir: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
+    # Refresh config at runtime to pick up env-injected settings (eg, ckanext-envars)
+    conf.reload()
+
     # add job to dn  (datapusher_plus_jobs table)
     try:
         dph.add_pending_job(task_id, **input)
@@ -1082,14 +1085,15 @@ def _push_to_datastore(
     else:
         cur = raw_connection.cursor()
 
-        # truncate table to use copy freeze option and further increase
-        # performance as there is no need for WAL logs to be maintained
-        # https://www.postgresql.org/docs/current/populate.html#POPULATE-COPY-FROM
+        # truncate table in case we're loading over an existing resource
         try:
             cur.execute(
                 sql.SQL("TRUNCATE TABLE {}").format(sql.Identifier(resource_id))
             )
-
+            # commit to ensure that the AccessExclusive lock is only held for the
+            # duration of the truncate, otherwise no other access to the table is
+            # allowed, blocking all selects. 
+            raw_connection.commit()
         except psycopg2.Error as e:
             logger.warning(f"Could not TRUNCATE: {e}")
 
@@ -1097,7 +1101,7 @@ def _push_to_datastore(
         column_names = sql.SQL(",").join(sql.Identifier(c) for c in col_names_list)
         copy_sql = sql.SQL(
             "COPY {} ({}) FROM STDIN "
-            "WITH (FORMAT CSV, FREEZE 1, "
+            "WITH (FORMAT CSV, "
             "HEADER 1, ENCODING 'UTF8');"
         ).format(
             sql.Identifier(resource_id),
