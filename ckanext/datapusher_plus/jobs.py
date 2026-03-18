@@ -1402,7 +1402,9 @@ def _push_to_datastore(
     package.setdefault("dpp_suggestions", {})[
         "STATUS"
     ] = "STARTING FORMULAE PROCESSING..."
-    dsu.patch_package(package)
+    # Exclude resources to avoid overwriting resource metadata
+    package_patch_no_res = {k: v for k, v in package.items() if k != "resources"}
+    dsu.patch_package(package_patch_no_res)
 
     # Clear all lru_cache before processing formulae
     dsu.datastore_search.cache_clear()
@@ -1423,7 +1425,9 @@ def _push_to_datastore(
         status_msg = "PACKAGE formulae processed..."
         package["dpp_suggestions"]["STATUS"] = status_msg
         try:
-            patched_package = dsu.patch_package(package)
+            # Exclude resources to avoid overwriting resource metadata
+            package_patch_no_res = {k: v for k, v in package.items() if k != "resources"}
+            patched_package = dsu.patch_package(package_patch_no_res)
             logger.debug(f"Package after patching: {patched_package}")
             package = patched_package
             logger.info(status_msg)
@@ -1744,8 +1748,14 @@ def _push_to_datastore(
             f"RESOURCE METADATA UPDATES DONE! Resource metadata updated in {metadata_elapsed:,.2f} seconds."
         )
         # -------------------- DONE --------------------
-        package.setdefault("dpp_suggestions", {})["STATUS"] = "DONE"
-        dsu.patch_package(package)
+        # Only patch package-level fields, NOT resources.
+        # The package dict has stale resource data from earlier in the process.
+        # update_resource() above already saved the current resource metadata
+        # (hash, total_record_count, preview, preview_rows, etc.)
+        # Sending resources here would overwrite those updates.
+        package_done_patch = {k: v for k, v in package.items() if k != "resources"}
+        package_done_patch.setdefault("dpp_suggestions", {})["STATUS"] = "DONE"
+        dsu.patch_package(package_done_patch)
     except Exception as e:
         logger.error(f"Failed to update resource/package metadata (possibly SOLR issue): {e}")
         logger.warning(
