@@ -9,6 +9,9 @@
 
   <form method="post" action="{{ action }}" class="datapusher-form">
     {{ h.csrf_input() }} 
+    <p>The Datastore allows the Hub to store information from your resources to power features like data preview, search and filter, and the data dictionary. 
+      If you are experiencing issues with any of these features or there is an error in this section, first try to reupload the resource with the “Upload to Datastore” button. 
+      If you need additional assistance, please visit the <a href="https://docs.txwaterdatahub.org/catalog-management/application">Hub Documents Library</a> or reach out to <a href="/contact" >Hub support</a>.</p>
     <button class="btn btn-primary" name="save" type="submit">
       <i class="fa fa-cloud-upload"></i> {{ _('Upload to DataStore') }}
     </button>
@@ -58,38 +61,5 @@
       {% endif %}
     </tr>
   </table>
-
-  {% if status.status and status.task_info and show_table %}
-    <h3>{{ _('Upload Log') }}</h3>
-    <ul class="datapusher-activity">
-      {% for item in status.task_info.logs|sort(attribute='timestamp') %}
-        {% set icon = 'check' if item.level == 'INFO' else 'exclamation' %}
-        {% set class = ' failure' if icon == 'exclamation' else ' success' %}
-        {% set popover_content = 'test' %}
-        <li class="item no-avatar{{ class }}">
-          <span class="fa-stack fa-lg">
-            <i class="fa fa-circle fa-stack-2x icon"></i>
-            <i class="fa fa-{{ icon }} fa-stack-1x fa-inverse"></i>
-          </span>
-          {% for line in item.message.strip().split('\n') %}
-            {{ line | urlize }}<br />
-          {% endfor %}
-          <span class="date" title="{{ h.render_datetime(item.timestamp, with_hours=True, with_seconds=True) }}">
-            {{ h.time_ago_from_timestamp(item.timestamp) }}
-            <a href="#" data-module="datapusher_popover" data-module-title="Details <a href='#' class='popover-close'>X</a>" data-module-content="<ul class='list-unstyled'>{% for key, value in item.items() %}<li><b>{{ key }}</b>: {{ h.clean_html(value|string) }}</li>{% endfor %}</ul>">              
-              {{ _('Details') }}
-            </a>
-          </span>
-        </li>
-      {% endfor %}
-      <li class="item no-avatar">
-        <span class="fa-stack fa-lg">
-          <i class="fa fa-circle fa-stack-2x icon"></i>
-          <i class="fa fa-info fa-stack-1x fa-inverse"></i>
-        </span>
-        {{ _('End of log') }}
-      </li>
-    </ul>
-  {% endif %}
 
 {% endblock %}
