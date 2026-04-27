@@ -1721,7 +1721,8 @@ def _push_to_datastore(
 
     resource["datastore_active"] = True
     resource["total_record_count"] = record_count
-    if conf.PREVIEW_ROWS < record_count or (conf.PREVIEW_ROWS > 0):
+    #if conf.PREVIEW_ROWS < record_count or (conf.PREVIEW_ROWS > 0):
+    if conf.PREVIEW_ROWS < record_count:
         resource["preview"] = True
         resource["preview_rows"] = copied_count
     else:
