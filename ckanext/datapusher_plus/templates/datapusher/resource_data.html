@@ -4,6 +4,17 @@
 
 {% block primary_content_inner %}
 
+    <div class="resource-edit-actions">
+    <a
+      class="btn btn-default"
+      href="{{ h.url_for(pkg.type ~ '.resources', id=pkg.name) }}"
+    >
+      <i class="fa fa-arrow-left"></i>
+      All Resources
+    </a>
+  </div>
+  <br>
+
   {% set action = h.url_for('datapusher.resource_data', id=pkg.name, resource_id=res.id) %}
   {% set show_table = true %}
 
