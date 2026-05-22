@@ -1,5 +1,5 @@
 suggestions_css:
-  filters: cssrewrite
+  filters: cssmin
   output: datapusher_plus/%(version)s_suggestions_css.css
   contents:
     - styles/suggestions.css
