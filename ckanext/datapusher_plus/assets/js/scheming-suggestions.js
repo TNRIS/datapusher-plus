@@ -250,6 +250,36 @@ ckan.module('scheming-suggestions', function($) {
             $('#scheming-processing-banner').fadeOut(function() { $(this).remove(); });
         },
 
+        _getPopoverFocusable: function($popoverDiv) {
+            return $popoverDiv.find('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])').filter(function() {
+                return !this.disabled && $(this).is(':visible');
+            });
+        },
+
+        _focusPopover: function($popoverDiv) {
+            var self = this;
+            var $applyBtn = $popoverDiv.find('.suggestion-apply-btn').first();
+            var $first = $applyBtn.length ? $applyBtn : self._getPopoverFocusable($popoverDiv).first();
+
+            setTimeout(function() {
+                if ($first.length) {
+                    $first.focus();
+                }
+            }, 0);
+        },
+
+        _closePopover: function($popoverDiv, returnFocus) {
+            $popoverDiv.hide();
+
+            var $trigger = $($popoverDiv.data('triggerEl'));
+            if ($trigger.length) {
+                $trigger.attr('aria-expanded', 'false');
+
+                if (returnFocus) {
+                    $trigger.focus();
+                }
+            }
+        },
         _processDppButtonSuggestions: function(dppPackageSuggestions) {
             var self = this;
             if (!dppPackageSuggestions) {
@@ -299,7 +329,12 @@ ckan.module('scheming-suggestions', function($) {
 
                     if (!self._popoverDivs[fieldName]) {
                         var popoverId = 'custom-suggestion-popover-' + fieldName + '-' + Date.now();
-                        self._popoverDivs[fieldName] = $('<div class="custom-suggestion-popover" id="' + popoverId + '" style="display: none;"></div>').appendTo('body');
+                        self._popoverDivs[fieldName] = $('<div class="custom-suggestion-popover" id="' + popoverId + '" role="dialog" aria-modal="true" aria-label="Suggestion" tabindex="-1" style="display: none;"></div>').appendTo('body');
+                        $buttonEl.attr({
+                            'aria-haspopup': 'dialog',
+                            'aria-controls': popoverId,
+                            'aria-expanded': 'false'
+                        });
                         self._attachBaseEventHandlers($buttonEl, self._popoverDivs[fieldName], fieldName);
                     }
 
@@ -642,6 +677,7 @@ ckan.module('scheming-suggestions', function($) {
                                 data-multiple-options='true'>
                             Apply Selected Date
                         </button>
+                        <button class='btn btn-danger suggestion-cancel-btn' type='button'>Cancel</button>
                     </div>`;
             } else {
                 // Original single value suggestion interface
@@ -679,13 +715,16 @@ ckan.module('scheming-suggestions', function($) {
                                 </div>
                                 <code>${esc(suggestionData.formula)}</code>
                             </div>` : ''}
-                        <button class='suggestion-apply-btn ${(!suggestionData.is_valid || suggestionData.is_error) ? "suggestion-apply-btn-disabled" : ""}'
-                                data-target='field-${suggestionData.field_name}'
-                                data-value='${String(suggestionData.value).replace(/'/g, "&apos;").replace(/"/g, "&quot;")}'
-                                data-is-select='${suggestionData.is_select}'
-                                data-is-valid='${suggestionData.is_valid}'>
-                            ${suggestionData.is_error ? 'Error in Suggestion' : 'Apply suggestion'}
-                        </button>
+                        <div style="display:flex; gap:8px; width:100%;">
+                            <button class='suggestion-apply-btn ${(!suggestionData.is_valid || suggestionData.is_error) ? "suggestion-apply-btn-disabled" : ""}'
+                                    data-target='field-${suggestionData.field_name}'
+                                    data-value='${String(suggestionData.value).replace(/'/g, "&apos;").replace(/"/g, "&quot;")}'
+                                    data-is-select='${suggestionData.is_select}'
+                                    data-is-valid='${suggestionData.is_valid}'>
+                                ${suggestionData.is_error ? 'Error in Suggestion' : 'Apply suggestion'}
+                            </button>
+                            <button class='suggestion-cancel-btn' type='button'>Cancel</button>
+                        </div>
                     </div>`;
             }
             
@@ -714,16 +753,67 @@ ckan.module('scheming-suggestions', function($) {
                 }
                 var topPos = buttonPos.top + $(el).outerHeight() + 10;
                 if (topPos < $(window).scrollTop()){ topPos = $(window).scrollTop() + 10; }
-                $popoverDiv.css({ position: 'absolute', top: topPos, left: leftPos, width: popoverCalculatedWidth + 'px', zIndex: 1050 }).toggle();
+                    $popoverDiv.data('triggerEl', el);
+                    $popoverDiv.css({ position: 'absolute', top: topPos, left: leftPos, width: popoverCalculatedWidth + 'px', zIndex: 1050 }).toggle();
+
+                    var isOpen = $popoverDiv.is(':visible');
+                    $(el).attr('aria-expanded', isOpen ? 'true' : 'false');
+
+                    if (isOpen) {
+                        self._focusPopover($popoverDiv);
+                    }            
             });
         },
         _attachActionHandlers: function($popoverDiv, fieldName) {
             var self = this;
             $(document).off('click.schemingSuggestionsGlobal.' + fieldName).on('click.schemingSuggestionsGlobal.' + fieldName, function(e) {
                 if (!$(e.target).closest($popoverDiv).length && !$(e.target).closest('button[data-field-name="'+fieldName+'"]').length) {
-                    $popoverDiv.hide();
+                    self._closePopover($popoverDiv, false);
                 }
             });
+            $(document).off('keydown.schemingSuggestionsA11y.' + fieldName).on('keydown.schemingSuggestionsA11y.' + fieldName, function(e) {
+                if (!$popoverDiv.is(':visible')) return;
+
+                var key = e.key || e.which;
+
+                if (key === 'Escape' || key === 'Esc' || key === 27) {
+                    e.preventDefault();
+                    self._closePopover($popoverDiv, true);
+                    return;
+                }
+
+                if (key !== 'Tab' && key !== 9) return;
+
+                var $focusable = self._getPopoverFocusable($popoverDiv);
+                if (!$focusable.length) {
+                    e.preventDefault();
+                    return;
+                }
+
+                var first = $focusable[0];
+                var last = $focusable[$focusable.length - 1];
+
+                if (!$popoverDiv[0].contains(document.activeElement)) {
+                    e.preventDefault();
+
+                    var $applyBtn = $popoverDiv.find('.suggestion-apply-btn').first();
+                    if ($applyBtn.length) {
+                        $applyBtn.focus();
+                    } else {
+                        first.focus();
+                    }
+                    return;
+                }
+
+                if (e.shiftKey && document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            });
+
             $popoverDiv.off('click.formulaToggle').on('click.formulaToggle', '.formula-toggle-btn', function(e) {
                 e.preventDefault(); e.stopPropagation();
                 var $formulaSection = $(this).closest('.suggestion-popover-content').find('.suggestion-formula');
@@ -752,6 +842,21 @@ ckan.module('scheming-suggestions', function($) {
                     self._showTemporaryMessage(null, "Could not copy formula.", 'suggestion-warning-message', '#e67e22');
                 });
             });
+
+            $popoverDiv.off('click.cancelSugg.').on('click.cancelSugg.', '.suggestion-cancel-btn', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                var $currentPopover = $(this).closest('.custom-suggestion-popover');
+                $currentPopover.hide();
+
+                var $trigger = $($currentPopover.data('triggerEl'));
+                if ($trigger.length) {
+                    $trigger.attr('aria-expanded', 'false');
+                    $trigger.focus();
+                }
+            });
+
             $popoverDiv.off('click.applySugg').on('click.applySugg', '.suggestion-apply-btn', function(e) {
                 e.preventDefault(); e.stopPropagation();
                 if ($(this).hasClass('suggestion-apply-btn-disabled')) return;
@@ -796,7 +901,7 @@ ckan.module('scheming-suggestions', function($) {
                      $target.addClass('suggestion-invalid');
                      setTimeout(function() { $target.removeClass('suggestion-invalid'); }, 3000);
                 }
-                $popoverDiv.hide();
+                self._closePopover($popoverDiv, true);
             });
         },
         _showTemporaryMessage: function($targetElement, message, cssClass, bgColor) {
@@ -816,6 +921,8 @@ ckan.module('scheming-suggestions', function($) {
             var fieldName = this.el && $(this.el).data('field-name');
             if (fieldName) {
                 $(document).off('click.schemingSuggestionsGlobal.' + fieldName);
+                $(document).off('keydown.schemingSuggestionsA11y.' + fieldName);
+                $(document).off('click.cancelSugg.' + fieldName);
                 if (this._popoverDivs[fieldName]) {
                     this._popoverDivs[fieldName].remove();
                     delete this._popoverDivs[fieldName];
