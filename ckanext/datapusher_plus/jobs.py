@@ -1312,6 +1312,13 @@ def _push_to_datastore(
         logger,
     )
 
+    # Everything this job infers is derived from THIS resource's data, so it is
+    # accumulated here and stored on the resource itself. The package-level
+    # dpp_suggestions field only tracks STATUS, which is dataset-wide.
+    # Previously all of this went onto the package, where each resource's job
+    # overwrote the last one's findings.
+    resource_suggestions: dict = {}
+
     # ============================================================
     # SPATIAL EXTENT DETECTION FOR CSV WITH LAT/LONG COLUMNS
     # ============================================================
@@ -1345,7 +1352,6 @@ def _push_to_datastore(
                     
                     # The FormulaProcessor already validated coordinate bounds,
                     # so we can trust these values are within valid ranges
-                    # Add spatial extent to package dpp_suggestions (following DRUF pattern)
                     spatial_extent_data = {
                         "type": "BoundingBox",
                         "coordinates": [
@@ -1353,12 +1359,11 @@ def _push_to_datastore(
                             [lon_max, lat_max],
                         ],
                     }
-                    
-                    # Add to package dpp_suggestions like other computed metadata
-                    package.setdefault("dpp_suggestions", {})["dpp_spatial_extent"] = spatial_extent_data
-                    
+
+                    resource_suggestions["dpp_spatial_extent"] = spatial_extent_data
+
                     logger.info(
-                        f"Added dpp_spatial_extent to package dpp_suggestions from CSV lat/lon columns: "
+                        f"Added dpp_spatial_extent to resource dpp_suggestions from CSV lat/lon columns: "
                         f"lat({lat_min}, {lat_max}), lon({lon_min}, {lon_max})"
                     )
                     logger.info(f"Spatial extent: {spatial_extent_data}")
@@ -1374,10 +1379,10 @@ def _push_to_datastore(
     # ============================================================
     # SPATIAL EXTENT FOR GEOJSON/SHAPEFILE FORMATS
     # ============================================================
-    # If this was a spatial format (GeoJSON/Shapefile), add the spatial extent
-    # from resource metadata to package dpp_suggestions for the gazetteer widget
+    # If this was a spatial format (GeoJSON/Shapefile), record the spatial extent
+    # on the resource so the gazetteer widget can pick it up
     elif spatial_format_flag and spatial_bounds:
-        logger.info("Adding spatial extent from GeoJSON/Shapefile to package dpp_suggestions...")
+        logger.info("Adding spatial extent from GeoJSON/Shapefile to resource dpp_suggestions...")
         try:
             minx, miny, maxx, maxy = spatial_bounds
             spatial_extent_data = {
@@ -1387,17 +1392,16 @@ def _push_to_datastore(
                     [maxx, maxy],
                 ],
             }
-            
-            # Add to package dpp_suggestions for the gazetteer widget to access
-            package.setdefault("dpp_suggestions", {})["dpp_spatial_extent"] = spatial_extent_data
-            
+
+            resource_suggestions["dpp_spatial_extent"] = spatial_extent_data
+
             logger.info(
-                f"Added dpp_spatial_extent to package dpp_suggestions from spatial format: "
+                f"Added dpp_spatial_extent to resource dpp_suggestions from spatial format: "
                 f"bounds({minx}, {miny}, {maxx}, {maxy})"
             )
             logger.info(f"Spatial extent: {spatial_extent_data}")
         except (ValueError, TypeError, KeyError) as e:
-            logger.warning(f"Error adding spatial extent from spatial format to package suggestions: {e}")
+            logger.warning(f"Error adding spatial extent from spatial format to resource suggestions: {e}")
 
     package.setdefault("dpp_suggestions", {})[
         "STATUS"
@@ -1442,87 +1446,48 @@ def _push_to_datastore(
     if resource_updates:
         # Update resource with formula results
         resource.update(resource_updates)
-        status_msg = "RESOURCE formulae processed..."
-        if resource.get("dpp_suggestions"):
-            resource["dpp_suggestions"]["STATUS"] = status_msg
-        else:
-            resource["dpp_suggestions"] = {"STATUS": status_msg}
-        logger.info(status_msg)
+        logger.info("RESOURCE formulae processed...")
 
-    # THIRD, WE PROCESS THE SUGGESTIONS THAT SHOW UP IN THE SUGGESTION POPOVER
-    # we update the package dpp_suggestions field
-    # from which the Suggestion popover UI will pick it up
+    # THIRD, WE PROCESS THE SUGGESTIONS THAT SHOW UP IN THE SUGGESTION POPOVER.
+    # Suggestion formulae may target dataset fields as well as resource fields,
+    # but either way the values are inferred from THIS resource's data, so both
+    # are recorded on this resource. The UI decides how to combine them across
+    # resources: date ranges are offered from every resource that has one, while
+    # the primary key and inferred extent are taken from the primary resource.
     package_suggestions = formula_processor.process_formulae(
         "package", "dataset_fields", "suggestion_formula"
     )
     if package_suggestions:
         logger.trace(f"package_suggestions: {package_suggestions}")
-        revise_update_content = {"package": package_suggestions}
-        
-        # Add cardinality and primary key candidate information to suggestions
-        revise_update_content["PRIMARY_KEY_CANDIDATES"] = formula_processor.dpp.get("PRIMARY_KEY_CANDIDATES", [])
-        revise_update_content["CARDINALITY"] = formula_processor.dpp.get("CARDINALITY", {})
-        
-        try:
-            status_msg = "PACKAGE suggestion formulae processed..."
-            revise_update_content["STATUS"] = status_msg
-            revised_package = dsu.revise_package(
-                package_id, update={"dpp_suggestions": revise_update_content}
-            )
-            logger.trace(f"Package after revising: {revised_package}")
-            package = revised_package
-            logger.info(status_msg)
-        except Exception as e:
-            logger.error(f"Error revising package: {str(e)}")
-    else:
-        # Even if there are no package suggestions, store cardinality and primary key candidate info
-        try:
-            revise_update_content = {
-                "PRIMARY_KEY_CANDIDATES": formula_processor.dpp.get("PRIMARY_KEY_CANDIDATES", []),
-                "CARDINALITY": formula_processor.dpp.get("CARDINALITY", {}),
-                "STATUS": "DP+ metadata processed..."
-            }
-            revised_package = dsu.revise_package(
-                package_id, update={"dpp_suggestions": revise_update_content}
-            )
-            logger.trace(f"Package after revising with metadata: {revised_package}")
-            package = revised_package
-            logger.info("DP+ metadata processed and saved...")
-        except Exception as e:
-            logger.error(f"Error saving DP+ metadata: {str(e)}")
+        resource_suggestions["package"] = package_suggestions
 
-    # Process resource suggestion formulae
-    # Note how we still update the PACKAGE dpp_suggestions field
-    # and there is NO RESOURCE dpp_suggestions field.
-    # This is because suggestion formulae are used to populate the
-    # suggestion popover DURING data entry/curation and suggestion formulae
-    # may update both package and resource fields.
-    resource_suggestions = formula_processor.process_formulae(
+    resource_field_suggestions = formula_processor.process_formulae(
         "resource", "resource_fields", "suggestion_formula"
     )
-    if resource_suggestions:
-        logger.trace(f"resource_suggestions: {resource_suggestions}")
-        resource_name = resource["name"]
-        revise_update_content = {"resource": {resource_name: resource_suggestions}}
+    if resource_field_suggestions:
+        logger.trace(f"resource_field_suggestions: {resource_field_suggestions}")
+        resource_suggestions["resource"] = resource_field_suggestions
 
-        # Handle existing suggestions
-        if package.get("dpp_suggestions"):
-            package["dpp_suggestions"].update(revise_update_content["resource"])
-        else:
-            package["dpp_suggestions"] = revise_update_content["resource"]
+    # Cardinality and primary key candidates describe this resource's columns
+    resource_suggestions["PRIMARY_KEY_CANDIDATES"] = formula_processor.dpp.get(
+        "PRIMARY_KEY_CANDIDATES", []
+    )
+    resource_suggestions["CARDINALITY"] = formula_processor.dpp.get("CARDINALITY", {})
+    resource_suggestions["STATUS"] = "DONE"
 
-        try:
-            status_msg = "RESOURCE suggestion formulae processed..."
-            revise_update_content["STATUS"] = status_msg
+    # Persisted by the update_resource() call in the metadata section below.
+    resource["dpp_suggestions"] = resource_suggestions
 
-            revised_package = dsu.revise_package(
-                package_id, update={"dpp_suggestions": revise_update_content}
-            )
-            logger.trace(f"Package after revising: {revised_package}")
-            package = revised_package
-            logger.info(status_msg)
-        except Exception as e:
-            logger.error(f"Error revising package: {str(e)}")
+    # The package keeps STATUS only. Replacing the whole field also clears any
+    # per-resource data left there by earlier versions of DP+.
+    try:
+        status_msg = "SUGGESTION formulae processed..."
+        package = dsu.revise_package(
+            package_id, update={"dpp_suggestions": {"STATUS": status_msg}}
+        )
+        logger.info(status_msg)
+    except Exception as e:
+        logger.error(f"Error revising package: {str(e)}")
 
     # -------------------- FORMULAE PROCESSING DONE --------------------
     formulae_elapsed = time.perf_counter() - formulae_start

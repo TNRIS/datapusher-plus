@@ -107,15 +107,26 @@ dataset_fields:
     display_snippet: email.html
     display_email_name_field: maintainer
 
-  # DP+ uses this field to store the suggestions it generates for the dataset
-  # and its resources. It also has a STATUS field to track the progress of
-  # formula processing, which is used by the Suggestion UI to indicate when
-  # all suggestions have been processed.
+  # Carries STATUS, which tracks the progress of formula processing and is used
+  # by the Suggestion UI to indicate when all suggestions have been processed.
+  # The suggestions themselves live on the resource they were inferred from —
+  # see the resource-level dpp_suggestions field below.
   - field_name: dpp_suggestions
     label: DPP Suggestion
     preset: json_object
 
 resource_fields:
+  # DP+ stores what it infers from a resource — suggestions, primary key
+  # candidates, cardinality, spatial extent — on the resource itself, so that
+  # analysing one resource cannot overwrite another's. Required for the
+  # Suggestion UI to work on datasets with more than one resource.
+  - field_name: dpp_suggestions
+    label: DPP Suggestions
+    validators: ignore_missing scheming_valid_json_object
+    output_validators: scheming_load_json
+    form_snippet: json_hidden.html
+    display_snippet: null
+
   - field_name: url
     label: URL
     preset: resource_url_upload

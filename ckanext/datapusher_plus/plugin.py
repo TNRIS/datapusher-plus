@@ -225,6 +225,7 @@ class DatapusherPlusPlugin(p.SingletonPlugin):
             "is_preformulated_field": dph.is_preformulated_field,
             "get_primary_key_candidates": dph.get_primary_key_candidates,
             "get_datastore_fields_with_cardinality": dph.get_datastore_fields_with_cardinality,
+            "dpp_inferred_spatial_extent": dph.dpp_inferred_spatial_extent,
             "spatial_extent_feature_collection": dphj.spatial_extent_feature_collection,
 
         }
