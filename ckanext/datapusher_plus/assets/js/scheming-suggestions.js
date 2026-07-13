@@ -250,11 +250,97 @@ ckan.module('scheming-suggestions', function($) {
             $('#scheming-processing-banner').fadeOut(function() { $(this).remove(); });
         },
 
-        _processDppButtonSuggestions: function(dppPackageSuggestions) {
+        _isEmptySuggestion: function(value) {
+            return value === null || value === undefined || value === '' || value === 'None';
+        },
+
+        _isErrorSuggestion: function(value) {
+            return typeof value === 'string' && value.startsWith(this.options.errorPrefix);
+        },
+
+        // A single resource can already offer several candidates for one field —
+        // a CSV with more than one date column, say — so each raw value may
+        // expand into multiple options.
+        _expandSuggestionOptions: function(rawValue, resourceName) {
             var self = this;
-            if (!dppPackageSuggestions) {
-                return;
+            var options = [];
+            if (self._isEmptySuggestion(rawValue)) return options;
+
+            var parsed = null;
+            try { parsed = JSON.parse(rawValue); } catch (e) { /* a plain value, not a candidate list */ }
+
+            if ($.isArray(parsed) && parsed.length && parsed[0] && parsed[0].field_name && parsed[0].date) {
+                parsed.forEach(function(candidate) {
+                    if (self._isEmptySuggestion(candidate.date)) return;
+                    options.push({ value: candidate.date, column: candidate.field_name, resource: resourceName || '' });
+                });
+            } else {
+                options.push({ value: rawValue, column: '', resource: resourceName || '' });
             }
+            return options;
+        },
+
+        // DP+ records what each resource inferred on that resource, so the policy
+        // declared in the schema decides whether a field is offered every
+        // resource's answer or only the primary resource's.
+        // See TNRIS/texaswaterhub_CKAN#1088.
+        _collectFieldSuggestions: function(datasetObject, fieldName, policy) {
+            var self = this;
+            var collected = { present: false, options: [], is_valid: undefined, is_error: false };
+            if (!datasetObject) return collected;
+
+            var sources = (datasetObject.resources || []).filter(function(resource) {
+                return resource && resource.dpp_suggestions && resource.dpp_suggestions.package &&
+                       resource.dpp_suggestions.package.hasOwnProperty(fieldName);
+            }).map(function(resource) {
+                return { suggestions: resource.dpp_suggestions.package, name: resource.name || '' };
+            });
+
+            // Datasets analysed before suggestions moved to the resource level
+            if (!sources.length) {
+                var legacy = datasetObject.dpp_suggestions && datasetObject.dpp_suggestions.package;
+                if (legacy && legacy.hasOwnProperty(fieldName)) {
+                    sources = [{ suggestions: legacy, name: '' }];
+                }
+            }
+            if (!sources.length) return collected;
+
+            // Anything but all_resources takes the primary resource. sources is in
+            // resource order, so that is the first entry — falling through to the
+            // first resource that has an answer when the primary has none.
+            if (policy !== 'all_resources') {
+                sources = sources.slice(0, 1);
+            }
+
+            collected.present = true;
+            collected.is_valid = sources[0].suggestions[fieldName + '_is_valid'];
+
+            var errors = [];
+            sources.forEach(function(source) {
+                var rawValue = source.suggestions[fieldName];
+                if (self._isErrorSuggestion(rawValue)) {
+                    errors.push({ value: rawValue, column: '', resource: source.name });
+                    return;
+                }
+                self._expandSuggestionOptions(rawValue, source.name).forEach(function(option) {
+                    var duplicate = collected.options.some(function(existing) {
+                        return String(existing.value) === String(option.value);
+                    });
+                    if (!duplicate) collected.options.push(option);
+                });
+            });
+
+            // Only surface an error when no resource produced anything usable
+            if (!collected.options.length && errors.length) {
+                collected.options = errors.slice(0, 1);
+                collected.is_error = true;
+            }
+
+            return collected;
+        },
+
+        _processDppButtonSuggestions: function(datasetObject) {
+            var self = this;
             $('button[data-module="scheming-suggestions"]').each(function() {
                 var $buttonEl = $(this);
                 var fieldName = $buttonEl.data('field-name');
@@ -266,53 +352,58 @@ ckan.module('scheming-suggestions', function($) {
                 }
                 var fieldSchema = typeof fieldSchemaJson === 'string' ? JSON.parse(fieldSchemaJson) : fieldSchemaJson;
 
-                if (dppPackageSuggestions.hasOwnProperty(fieldName)) {
-                    var suggestionValue = dppPackageSuggestions[fieldName];
-                    
-                    // Check if suggestion value is null/undefined/None string - disable button if so
-                    if (suggestionValue === null || suggestionValue === undefined || suggestionValue === 'None' || suggestionValue === '') {
-                        $buttonEl.addClass('suggestion-btn-disabled');
-                        $buttonEl.attr('title', self.options.noSuggestionTitle);
-                        $buttonEl.prop('disabled', true);
-                        $buttonEl.show();
-                        self._hideFieldLoadingIndicator($buttonEl);
-                        return;
-                    }
-                    
-                    var isErrorSuggestion = typeof suggestionValue === 'string' && suggestionValue.startsWith(self.options.errorPrefix);
-                    var suggestionLabel = fieldSchema.suggestion_label || fieldSchema.label || 'Suggestion';
-                    var suggestionFormula = fieldSchema.suggestion_formula || 'N/A'; 
-                    var isSelect = fieldSchema.is_select;
-                    var isValidSuggestion = dppPackageSuggestions[fieldName + '_is_valid'];
-                    if (isValidSuggestion === undefined) {
-                         isValidSuggestion = true;
-                         if (isSelect && fieldSchema.choices && fieldSchema.choices.length > 0) {
-                            isValidSuggestion = fieldSchema.choices.some(function(choice){ return String(choice.value) === String(suggestionValue); });
-                         }
-                    }
+                var collected = self._collectFieldSuggestions(datasetObject, fieldName, fieldSchema.suggestion_policy);
 
-                    if (isErrorSuggestion) {
-                        $buttonEl.addClass('suggestion-btn-error'); $buttonEl.attr('title', self.options.suggestionErrorTitle); suggestionLabel = 'Suggestion Error';
-                    } else {
-                        $buttonEl.removeClass('suggestion-btn-error'); $buttonEl.attr('title', self.options.suggestionReadyTitle);
-                    }
-
-                    if (!self._popoverDivs[fieldName]) {
-                        var popoverId = 'custom-suggestion-popover-' + fieldName + '-' + Date.now();
-                        self._popoverDivs[fieldName] = $('<div class="custom-suggestion-popover" id="' + popoverId + '" style="display: none;"></div>').appendTo('body');
-                        self._attachBaseEventHandlers($buttonEl, self._popoverDivs[fieldName], fieldName);
-                    }
-
-                    self._populatePopoverContent($buttonEl, self._popoverDivs[fieldName], {
-                        value: suggestionValue, label: suggestionLabel, formula: suggestionFormula,
-                        is_select: isSelect, is_valid: isErrorSuggestion ? false : isValidSuggestion,
-                        field_name: fieldName, is_error: isErrorSuggestion
-                    });
-                    $buttonEl.show();
-
-                } else {
+                if (!collected.present) {
                     $buttonEl.attr('title', self.options.noSuggestionTitle).show();
+                    self._hideFieldLoadingIndicator($buttonEl);
+                    return;
                 }
+
+                // DP+ ran but had nothing to suggest for this field
+                if (!collected.options.length) {
+                    $buttonEl.addClass('suggestion-btn-disabled');
+                    $buttonEl.attr('title', self.options.noSuggestionTitle);
+                    $buttonEl.prop('disabled', true);
+                    $buttonEl.show();
+                    self._hideFieldLoadingIndicator($buttonEl);
+                    return;
+                }
+
+                var isErrorSuggestion = collected.is_error;
+                var suggestionValue = collected.options[0].value;
+                var suggestionLabel = fieldSchema.suggestion_label || fieldSchema.label || 'Suggestion';
+                var suggestionFormula = fieldSchema.suggestion_formula || 'N/A';
+                var isSelect = fieldSchema.is_select;
+                var isValidSuggestion = collected.is_valid;
+                if (isValidSuggestion === undefined) {
+                     isValidSuggestion = true;
+                     if (isSelect && fieldSchema.choices && fieldSchema.choices.length > 0) {
+                        isValidSuggestion = fieldSchema.choices.some(function(choice){ return String(choice.value) === String(suggestionValue); });
+                     }
+                }
+
+                $buttonEl.removeClass('suggestion-btn-disabled').prop('disabled', false);
+                if (isErrorSuggestion) {
+                    $buttonEl.addClass('suggestion-btn-error'); $buttonEl.attr('title', self.options.suggestionErrorTitle); suggestionLabel = 'Suggestion Error';
+                } else {
+                    $buttonEl.removeClass('suggestion-btn-error'); $buttonEl.attr('title', self.options.suggestionReadyTitle);
+                }
+
+                if (!self._popoverDivs[fieldName]) {
+                    var popoverId = 'custom-suggestion-popover-' + fieldName + '-' + Date.now();
+                    self._popoverDivs[fieldName] = $('<div class="custom-suggestion-popover" id="' + popoverId + '" style="display: none;"></div>').appendTo('body');
+                    self._attachBaseEventHandlers($buttonEl, self._popoverDivs[fieldName], fieldName);
+                }
+
+                self._populatePopoverContent($buttonEl, self._popoverDivs[fieldName], {
+                    value: suggestionValue, options: collected.options,
+                    label: suggestionLabel, formula: suggestionFormula,
+                    is_select: isSelect, is_valid: isErrorSuggestion ? false : isValidSuggestion,
+                    field_name: fieldName, is_error: isErrorSuggestion
+                });
+                $buttonEl.show();
+
                 self._hideFieldLoadingIndicator($buttonEl);
             });
         },
@@ -516,11 +607,7 @@ ckan.module('scheming-suggestions', function($) {
                         var datasetObject = response.result;
                         var dppSuggestionsData = datasetObject.dpp_suggestions; // This is the direct JSON object
 
-                        if (dppSuggestionsData && dppSuggestionsData.package) {
-                            self._processDppButtonSuggestions(dppSuggestionsData.package);
-                        } else {
-                            self._processDppButtonSuggestions(null);
-                        }
+                        self._processDppButtonSuggestions(datasetObject);
                         var currentDppStatus = (dppSuggestionsData && dppSuggestionsData.STATUS) ? dppSuggestionsData.STATUS.toUpperCase() : null;
 
                         if (currentDppStatus === 'DONE') {
@@ -587,38 +674,34 @@ ckan.module('scheming-suggestions', function($) {
         },
                 _populatePopoverContent: function($buttonEl, $popoverDiv, suggestionData) {
             var self = this;
-            
-            // Check if this is a multiple date column suggestion by trying to parse as JSON
-            var multipleDateOptions = null;
-            try {
-                var parsed = JSON.parse(suggestionData.value);
-                if (Array.isArray(parsed) && parsed.length > 1 && parsed[0].field_name && parsed[0].date) {
-                    multipleDateOptions = parsed;
-                }
-            } catch (e) {
-                // Not JSON or not the expected format, proceed normally
-            }
-            
-            if (multipleDateOptions) {
-                // Generate radio button interface for multiple date columns
-                var radioOptionsHtml = multipleDateOptions.map(function(option, index) {
+
+            // More than one candidate — from several resources, several date
+            // columns, or both — so let the curator pick which one to apply.
+            var suggestionOptions = suggestionData.options || [];
+
+            if (suggestionOptions.length > 1) {
+                var radioOptionsHtml = suggestionOptions.map(function(option, index) {
                     var radioId = 'date-option-' + suggestionData.field_name + '-' + index;
+                    var originParts = [];
+                    if (option.resource) originParts.push(option.resource);
+                    if (option.column) originParts.push(option.column);
+                    var origin = originParts.join(' › ');
                     return `
                         <div class='date-option-row'>
-                            <input type='radio' id='${radioId}' name='date-options-${suggestionData.field_name}' 
-                                   value='${esc(option.date)}' data-field='${esc(option.field_name)}' 
+                            <input type='radio' id='${radioId}' name='date-options-${suggestionData.field_name}'
+                                   value='${esc(option.value)}' data-field='${esc(option.column || option.resource || '')}'
                                    ${index === 0 ? 'checked' : ''}>
                             <label for='${radioId}'>
-                                <strong>${esc(option.field_name)}:</strong> ${esc(option.date)}
+                                ${origin ? `<strong>${esc(origin)}:</strong> ` : ''}${esc(option.value)}
                             </label>
                         </div>`;
                 }).join('');
-                
+
                 var popoverContentHtml = `
                     <div class='suggestion-popover-content'>
-                        <strong>${esc(suggestionData.label)} - Multiple Date Columns Found</strong>
+                        <strong>${esc(suggestionData.label)}</strong>
                         <div class='multiple-date-options'>
-                            <p>Select the date column to use for this field:</p>
+                            <p>${suggestionOptions.length} suggestions found. Select the one to apply:</p>
                             ${radioOptionsHtml}
                         </div>
                         ${!suggestionData.is_error ? `
@@ -640,7 +723,7 @@ ckan.module('scheming-suggestions', function($) {
                         <button class='suggestion-apply-btn'
                                 data-target='field-${suggestionData.field_name}'
                                 data-multiple-options='true'>
-                            Apply Selected Date
+                            Apply selected suggestion
                         </button>
                     </div>`;
             } else {
