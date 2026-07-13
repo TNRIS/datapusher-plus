@@ -209,6 +209,8 @@ def get_job_details(job_id):
         return result_dict
     for field in list(job.as_dict().keys()):
         result_dict[field] = getattr(job, field)
+    if "error" in result_dict:
+        result_dict["error"] = _load_error(result_dict["error"])
     metadata = Metadata.get_all(job_id)
     if metadata:
         result_dict["metadata"] = _get_metadata(metadata)
@@ -217,6 +219,27 @@ def get_job_details(job_id):
         result_dict["logs"] = _get_logs(logs)
 
     return result_dict
+
+
+def _load_error(error):
+    """Return the error column as the dict it was stored as.
+
+    update_job() writes this column with json.dumps(), so it has to be read
+    back with json.loads(). Without this the callers get the serialised JSON
+    and render it verbatim. Rows written by DataPusher < 0.0.3 hold a bare
+    string rather than JSON, so those are wrapped to match.
+    """
+    if not error:
+        return error
+    if isinstance(error, dict):
+        return error
+    try:
+        loaded = json.loads(error)
+    except (ValueError, TypeError):
+        return {"message": error}
+    if isinstance(loaded, dict):
+        return loaded
+    return {"message": error}
 
 
 def _get_metadata(metadata):

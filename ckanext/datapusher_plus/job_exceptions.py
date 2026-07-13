@@ -3,7 +3,32 @@ class DataTooBigError(Exception):
 
 
 class JobError(Exception):
-    pass
+    """The exception type that jobs raise to signal failure.
+
+    Also exported as utils.JobError, which is the name most of the codebase
+    uses. It has to be a single class: HTTPError below is declared a JobError,
+    and if the two names were different classes, `except utils.JobError` would
+    not catch it.
+    """
+
+    def __init__(self, message):
+        """Initialize a JobError with the given error message string.
+        The error message string that you give here will be returned to the
+        client site in the job dict's "error" key.
+        """
+        super(JobError, self).__init__(message)
+        self.message = message
+
+    def as_dict(self):
+        """Return a dictionary representation of this JobError object.
+        Returns a dictionary with a "message" key whose value is a string error
+        message - suitable for use as the "error" key in a ckanserviceprovider
+        job dict.
+        """
+        return {"message": self.message}
+
+    def __str__(self):
+        return self.message
 
 
 class FileCouldNotBeLoadedError(Exception):
@@ -28,17 +53,33 @@ class HTTPError(JobError):
         :type response: unicode
         """
         super(HTTPError, self).__init__(message)
-        self.message = message
         self.status_code = status_code
         self.request_url = request_url
         self.response = response
 
+    def as_dict(self):
+        """The status code and URL are returned as their own keys.
+
+        The resource_data template prints "message" as the error and lists
+        every other key beneath it, so they show up as labelled details rather
+        than being crammed into the message.
+        """
+        error_dict = {"message": self.message}
+        if self.status_code is not None:
+            error_dict["status_code"] = self.status_code
+        if self.request_url:
+            error_dict["request_url"] = self.request_url
+        return error_dict
+
     def __str__(self):
-        return str(
-            "{} status={} url={} response={}".format(
-                self.message, self.status_code, self.request_url, self.response
-            ).encode("ascii", "replace")
-        )
+        details = []
+        if self.status_code is not None:
+            details.append("status={}".format(self.status_code))
+        if self.request_url:
+            details.append("url={}".format(self.request_url))
+        if details:
+            return "{} ({})".format(self.message, ", ".join(details))
+        return str(self.message)
 
 
 class LoaderError(JobError):
