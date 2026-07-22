@@ -2,11 +2,15 @@
 {% if suggestion_data_for_js %}
   {% set field_id = 'field-' + field.field_name %} {# Used for targetting by apply button #}
 
+  {# suggestion_policy decides how the popover combines the suggestions each
+     resource made for this field: 'all_resources' offers every resource's
+     answer, anything else offers the primary resource's. See issue #1088. #}
   {% set field_schema_dict = {
       "field_name": field.field_name,
       "label": h.scheming_language_text(field.label),
       "suggestion_label": h.scheming_language_text(suggestion_data_for_js.label or field.label),
       "suggestion_formula": suggestion_data_for_js.formula,
+      "suggestion_policy": field.get('suggestion_policy', 'primary_resource'),
       "choices": h.scheming_field_choices(field) if (field.choices or field.choices_helper) else none,
       "is_select": True if (field.choices or field.choices_helper) else False
   } %}

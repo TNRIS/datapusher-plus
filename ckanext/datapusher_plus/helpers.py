@@ -608,29 +608,65 @@ def scheming_field_suggestion(field):
 
 
 
+def load_dpp_suggestions(entity):
+    """Read the dpp_suggestions blob off a package or resource dict.
+
+    Tolerates the raw JSON string, since form data carries the unvalidated
+    value while the API returns it already loaded.
+    """
+    blob = (entity or {}).get('dpp_suggestions')
+    if isinstance(blob, str):
+        try:
+            blob = json.loads(blob)
+        except ValueError:
+            return {}
+    return blob if isinstance(blob, dict) else {}
+
+
+def get_resource_suggestions(resource_id):
+    """The suggestions DP+ inferred from this specific resource.
+
+    Falls back to the dataset-level blob for datasets analysed before
+    suggestions moved to the resource level; those datasets self-heal as soon
+    as their resources are re-analysed.
+    """
+    try:
+        resource = toolkit.get_action('resource_show')({}, {'id': resource_id})
+    except (toolkit.ObjectNotFound, toolkit.NotAuthorized) as e:
+        logger.warning(f"Could not load resource {resource_id}: {e}")
+        return {}
+
+    suggestions = load_dpp_suggestions(resource)
+    if suggestions:
+        return suggestions
+
+    package_id = resource.get('package_id')
+    if not package_id:
+        return {}
+    try:
+        package = toolkit.get_action('package_show')({}, {'id': package_id})
+    except (toolkit.ObjectNotFound, toolkit.NotAuthorized) as e:
+        logger.warning(f"Could not load package {package_id}: {e}")
+        return {}
+    return load_dpp_suggestions(package)
+
+
 def scheming_get_suggestion_value(field_name, data=None, errors=None, lang=None):
     if not data:
         return ''
 
     try:
-        # Log the field name
-        logger.info(f"Field name extracted: {field_name}")
+        # Suggestions for dataset fields are recorded on the resource that
+        # inferred them. Take the primary resource's, falling back to the first
+        # resource that has one and then to the legacy dataset-level blob.
+        candidates = list(data.get('resources') or [])
+        candidates.append(data)
 
-        # Get package data (where dpp_suggestions is stored)
-        package_data = data
-        logger.info(f"Data passed to scheming_get_suggestion_value: {data}")
+        for entity in candidates:
+            suggestions = load_dpp_suggestions(entity).get('package') or {}
+            if field_name in suggestions:
+                return suggestions[field_name]
 
-        # Check if dpp_suggestions exists and has the package section
-        if (package_data and 'dpp_suggestions' in package_data and 
-            isinstance(package_data['dpp_suggestions'], dict) and
-            'package' in package_data['dpp_suggestions']):
-
-            # Get the suggestion value if it exists
-            if field_name in package_data['dpp_suggestions']['package']:
-                logger.info(f"Suggestion value found for field '{field_name}': {package_data['dpp_suggestions']['package'][field_name]}")
-                return package_data['dpp_suggestions']['package'][field_name]
-
-        # No suggestion value found
         return ''
     except Exception as e:
         # Log the error but don't crash
@@ -667,43 +703,27 @@ def is_preformulated_field(field):
 
 def get_primary_key_candidates(resource_id):
     """
-    Get primary key candidates for a resource from dpp_suggestions.
-    
+    Get primary key candidates for a resource from its dpp_suggestions.
+
     Returns list of column names that are potential primary keys based on:
     - Cardinality equals record count (all values unique)
     - No null values
-    
+
     Args:
         resource_id: ID of the resource to get primary key candidates for
-        
+
     Returns:
         list: List of column names that are primary key candidates
     """
     try:
-        # Get the resource information
-        resource = toolkit.get_action('resource_show')({}, {'id': resource_id})
-        
-        # Get the package to access dpp_suggestions
-        package_id = resource.get('package_id')
-        if not package_id:
-            return []
-            
-        package = toolkit.get_action('package_show')({}, {'id': package_id})
-        
-        # Check if dpp_suggestions exists and has primary key candidates
-        dpp_suggestions = package.get('dpp_suggestions', {})
-        if isinstance(dpp_suggestions, dict):
-            # Look for primary key candidates in the suggestions
-            primary_key_candidates = dpp_suggestions.get('PRIMARY_KEY_CANDIDATES', [])
-            if primary_key_candidates:
-                logger.debug(f"Found primary key candidates for resource {resource_id}: {primary_key_candidates}")
-                return primary_key_candidates
-                
-        # Fallback: if no candidates found in suggestions, return empty list
-        logger.debug(f"No primary key candidates found for resource {resource_id}")
-        return []
-        
-    except (toolkit.ObjectNotFound, toolkit.NotAuthorized, KeyError, TypeError) as e:
+        candidates = get_resource_suggestions(resource_id).get(
+            'PRIMARY_KEY_CANDIDATES', []
+        )
+        logger.debug(
+            f"Primary key candidates for resource {resource_id}: {candidates}"
+        )
+        return candidates
+    except (KeyError, TypeError) as e:
         # If we can't get the data, return empty list
         logger.warning(f"Error getting primary key candidates for resource {resource_id}: {e}")
         return []
@@ -711,49 +731,47 @@ def get_primary_key_candidates(resource_id):
 
 def get_datastore_fields_with_cardinality(resource_id):
     """
-    Get datastore fields along with their cardinality information from dpp_suggestions.
-    
+    Get datastore fields along with their cardinality information from the
+    resource's dpp_suggestions.
+
     Args:
         resource_id: ID of the resource
-        
+
     Returns:
         list: List of dicts with field info and cardinality, or fallback to basic datastore dictionary
     """
     try:
-        # Get the resource information
-        resource = toolkit.get_action('resource_show')({}, {'id': resource_id})
-        
-        # Get the package to access dpp_suggestions
-        package_id = resource.get('package_id')
-        if not package_id:
-            # Fallback to basic datastore dictionary
-            return toolkit.h.datastore_dictionary(resource_id)
-            
-        package = toolkit.get_action('package_show')({}, {'id': package_id})
-        
-        # Get basic datastore dictionary
         basic_fields = toolkit.h.datastore_dictionary(resource_id)
-        
-        # Enhance with cardinality information from dpp_suggestions
-        dpp_suggestions = package.get('dpp_suggestions', {})
-        cardinality_info = {}
-        
-        if isinstance(dpp_suggestions, dict):
-            cardinality_info = dpp_suggestions.get('CARDINALITY', {})
-            
-        # Add cardinality to field information
+        cardinality_info = get_resource_suggestions(resource_id).get('CARDINALITY', {})
+
         enhanced_fields = []
         for field in basic_fields:
             field_copy = field.copy()
-            field_name = field['id']
-            field_copy['cardinality'] = cardinality_info.get(field_name, 0)
+            field_copy['cardinality'] = cardinality_info.get(field['id'], 0)
             enhanced_fields.append(field_copy)
-            
+
         return enhanced_fields
-        
+
     except (toolkit.ObjectNotFound, toolkit.NotAuthorized, KeyError, TypeError):
         # Fallback to basic datastore dictionary
         try:
             return toolkit.h.datastore_dictionary(resource_id)
-        except:
+        except Exception:
             return []
+
+
+def dpp_inferred_spatial_extent(data):
+    """The bounding box behind the gazetteer's inferred-extent toggle.
+
+    The toggle shows a single extent, so this returns the primary resource's.
+    If the primary resource has no extent — it may not be spatial at all — the
+    first resource that does have one is used rather than offering nothing.
+    Falls back to the legacy dataset-level blob for datasets analysed before
+    suggestions moved to the resource level.
+    """
+    for resource in (data or {}).get('resources') or []:
+        extent = load_dpp_suggestions(resource).get('dpp_spatial_extent')
+        if extent:
+            return extent
+
+    return load_dpp_suggestions(data).get('dpp_spatial_extent') or {}

@@ -108,6 +108,17 @@ dataset_fields:
     preset: json_object
 
 resource_fields:
+  # DP+ stores what it infers from a resource — suggestions, primary key
+  # candidates, cardinality, spatial extent — on the resource itself, so that
+  # analysing one resource cannot overwrite another's. Required for the
+  # Suggestion UI to work on datasets with more than one resource.
+  - field_name: dpp_suggestions
+    label: DPP Suggestions
+    validators: ignore_missing scheming_valid_json_object
+    output_validators: scheming_load_json
+    form_snippet: json_hidden.html
+    display_snippet: null
+
   - field_name: url
     label: URL
     preset: resource_url_upload
