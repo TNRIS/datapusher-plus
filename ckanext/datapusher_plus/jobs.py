@@ -101,15 +101,26 @@ def datapusher_plus_to_datastore(input: Dict[str, Any]) -> Optional[str]:
         job_dict["status"] = "complete"
         dph.mark_job_as_completed(job_id, job_dict)
     except utils.JobError as e:
-        dph.mark_job_as_errored(job_id, str(e))
+        # as_dict() keeps the message clean and puts anything else the error
+        # carries — an HTTP status code, the URL — in its own key, which the
+        # resource_data template lists as a labelled detail.
+        dph.mark_job_as_errored(job_id, e.as_dict())
         job_dict["status"] = "error"
         job_dict["error"] = str(e)
         log = logging.getLogger(__name__)
         log.error(f"Datapusher Plus error: {e}, {traceback.format_exc()}")
         errored = True
     except Exception as e:
+        # The traceback goes in its own key rather than being concatenated onto
+        # the message: the resource_data template prints "message" as the error
+        # and lists every other key beneath it, so this reads as a labelled
+        # detail instead of a wall of text prefixed to the message itself.
         dph.mark_job_as_errored(
-            job_id, traceback.format_tb(sys.exc_info()[2])[-1] + repr(e)
+            job_id,
+            {
+                "message": str(e) or repr(e),
+                "traceback": traceback.format_tb(sys.exc_info()[2])[-1].strip(),
+            },
         )
         job_dict["status"] = "error"
         job_dict["error"] = str(e)
