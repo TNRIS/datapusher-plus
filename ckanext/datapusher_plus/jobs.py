@@ -705,7 +705,12 @@ def _push_to_datastore(
         qsv_headers = qsv.headers(tmp, just_names=True)
     except utils.JobError as e:
         raise utils.JobError(f"Cannot scan CSV headers: {e}")
-    original_headers = str(qsv_headers.stdout).strip()
+    # .strip() was causing misalinment of column labels in the resulting table
+    # Removing it fixed the problem, but I'm leaving this comment here in case it 
+    # caused any side effects that we may discover later
+    #original_headers = str(qsv_headers.stdout).strip()
+    original_headers = str(qsv_headers.stdout)
+
     original_header_dict = {
         idx: ele for idx, ele in enumerate(original_headers.splitlines())
     }
